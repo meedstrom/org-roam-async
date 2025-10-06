@@ -112,6 +112,20 @@ Turns itself off when they are done."
 
 ;;;; STAGE 2: Work in child processes.
 
+(defvar org-roam-async--stored-queries nil
+  "List of \((SQL ARGS...) (SQL ARGS...) ...).")
+
+(defun org-roam-async--store-query (&rest arglist)
+  "Add ARGLIST to `org-roam-async--stored-queries'."
+  (push arglist org-roam-async--stored-queries))
+
+(defun org-roam-async--store-query! (_handler &rest arglist)
+  "Add ARGLIST to `org-roam-async--stored-queries'.
+Ignore first arg HANDLER because this expects to run in a subprocess."
+  (apply #'org-roam-async--store-query arglist))
+
+(defvar org-roam-async--hashes-tbl (make-hash-table :test 'equal))
+(defvar org-roam-async--attrs-tbl (make-hash-table :test 'equal))
 (defun org-roam-async--init-work-buffer (files)
   ;; Pre-read all files, in case file-names change during parsing.
   (save-current-buffer
@@ -119,7 +133,7 @@ Turns itself off when they are done."
       (set-buffer (get-buffer-create file t))
       (cl-assert (and (bobp) (eobp) (eq major-mode 'fundamental-mode)))
       (insert-file-contents file)
-      ;; TODO: Profile with the empty string instead of hash.
+      ;; TODO: Profile with the empty string instead.
       ;; (puthash file "" org-roam-async--hashes-tbl)
       (puthash file (org-roam-db--file-hash file) org-roam-async--hashes-tbl)
       (puthash file (file-attributes file) org-roam-async--attrs-tbl)))
@@ -142,7 +156,7 @@ REST is the remaining files for this subprocess."
      (setq org-roam-async--work-buf
            (org-roam-async--init-work-buffer (cons file rest)))))
   (erase-buffer)
-  (org-element-cache-reset) ;; TODO: Profile with cache enabled/disabled.
+  (org-element-cache-reset) ;; TODO: Profile with cache disabled.
   (insert-buffer-substring (get-buffer file))
   ;; HACK: Simulate a file-visiting buffer.
   (let ((buffer-file-name file)
@@ -152,6 +166,7 @@ REST is the remaining files for this subprocess."
 (defun org-roam-async--mk-sql-queries ()
   "The meat of what was `org-roam-db-update-file'."
   (require 'org-ref nil t)
+  (require 'oc)
   (org-set-regexps-and-options 'tags-only)
   (setq org-roam-async--stored-queries nil)
   (org-roam-async--store-query [:delete :from files :where (= file $s1)]
@@ -168,28 +183,14 @@ REST is the remaining files for this subprocess."
     (setq org-outline-path-cache nil) ;; REVIEW: Why?
     (let ((info (org-element-parse-buffer)))  ;; REVIEW: Why?
       (org-roam-db-map-links (list #'org-roam-db-insert-link))
-      (when (require 'oc nil t)
-        (org-roam-db-map-citations info (list #'org-roam-db-insert-citation)))))
+      (org-roam-db-map-citations info (list #'org-roam-db-insert-citation))))
   ;; Put deletion queries before insertion queries.
   (nreverse org-roam-async--stored-queries))
-
-(defvar org-roam-async--stored-queries nil
-  "List of \((SQL ARGS) (SQL ARGS)...).")
-
-(defun org-roam-async--store-query ( &rest args)
-  "Add SQL and ARGS to `org-roam-async--stored-queries'."
-  (push args org-roam-async--stored-queries))
-
-(defun org-roam-async--store-query! (_handler  &rest args)
-  "Add SQL and ARGS to `org-roam-async--stored-queries'.
-First arg HANDLER is ignored because this expects to run in subprocess."
-  (apply #'org-roam-async--store-query args))
 
 ;; A work-around because our `org-roam-async--init-work-buffer' pre-reads all
 ;; files before we begin any parsing, so we should not use
 ;; `org-roam-db-insert-file' during parsing, as it re-accesses the filesystem.
-(defvar org-roam-async--hashes-tbl (make-hash-table :test 'equal))
-(defvar org-roam-async--attrs-tbl (make-hash-table :test 'equal))
+
 (defun org-roam-async--store-file-query (&optional _)
   "Like `org-roam-db-insert-file', but avoid the filesystem."
   (let* ((file (buffer-file-name))
@@ -258,6 +259,17 @@ certain order of events on your save hook."
   "Replacement for `org-roam-list-files'."
   (org-roam-async--list-files (expand-file-name org-roam-directory)))
 
+(defvar org-roam-async--suffixes nil)
+(defvar org-roam-async--suffixes-re nil)
+(defun org-roam-async--recalc-suffixes ()
+  (setq org-roam-async--suffixes
+        (cl-loop for ext in org-roam-file-extensions
+                 append (list (concat "." ext)
+                              (concat "." ext ".age")
+                              (concat "." ext ".gpg"))))
+  (setq org-roam-async--suffixes-re
+        (rx (regexp (regexp-opt org-roam-async--suffixes)) eos)))
+
 (defun org-roam-async--list-files (dir)
   "Replacement for `org-roam--list-files'."
   (org-roam-async--recalc-suffixes)
@@ -271,17 +283,6 @@ certain order of events on your save hook."
            when (and (file-readable-p file)
                      (org-roam-async--roam-file-p file))
            collect file))
-
-(defvar org-roam-async--suffixes nil)
-(defvar org-roam-async--suffixes-re nil)
-(defun org-roam-async--recalc-suffixes ()
-  (setq org-roam-async--suffixes
-        (cl-loop for ext in org-roam-file-extensions
-                 append (list (concat "." ext)
-                              (concat "." ext ".age")
-                              (concat "." ext ".gpg"))))
-  (setq org-roam-async--suffixes-re
-        (rx (regexp (regexp-opt org-roam-async--suffixes)) eos)))
 
 (defun org-roam-async--roam-file-p (&optional file)
   "Replacement for `org-roam-file-p'."
