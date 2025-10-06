@@ -215,9 +215,9 @@ REST is the remaining files for this subprocess."
 
 ;;; STAGE 3: All children returned, process their combined results.
 
-(defvar org-roam-async--last-outputs nil)
+(defvar org-roam-async--last-queries nil)
 (defun org-roam-async--insert-into-db (outputs)
-  (setq org-roam-async--last-outputs outputs) ;; inspect this for fun
+  (setq org-roam-async--last-queries outputs) ;; inspect this for fun
   (let ((n-files (length outputs))
         (n-queries (apply #'+ (mapcar #'length outputs)))
         (ctr 0)
