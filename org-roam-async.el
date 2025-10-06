@@ -19,7 +19,7 @@
 ;; URL:      https://github.com/meedstrom/org-roam-async
 ;; Created:  2025-10-06
 ;; Keywords: org-mode, roam, convenience
-;; Package-Requires: ((emacs "29.1") (org-roam "2.3.1") (el-job "2.5.0"))
+;; Package-Requires: ((emacs "29.1") (org-roam "2.3.1") (el-job "2.5.1"))
 
 ;;; Commentary:
 
