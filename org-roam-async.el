@@ -28,6 +28,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'subr-x)
 (require 'org)
 (require 'org-element)
 (require 'org-roam-db)
@@ -87,23 +88,37 @@
       (message "(org-roam) Synced the DB in total %.2fs"
                (float-time (time-since org-roam-async--time-at-start))))))
 
+(defvar org-roam-async--mode-line-refresher
+  (thread-first (timer-create)
+                (timer-set-function #'force-mode-line-update)
+                (timer-set-time 0 0.09)))
+
 (define-minor-mode org-roam-async-spinner-mode
   "Mode for showing animation in modeline while subprocesses at work.
 Also watches if they take too long, and kills them.
 Turns itself off."
-  :lighter (:eval (format " (%.2fs)org-roam-async..."
+  :lighter (:eval (format " [%.2fs org-roam-async...]"
                           (float-time (time-since org-roam-async--time-at-start))))
   :global t
+  :interactive nil
   :group 'org-roam
   (if org-roam-async-spinner-mode
-      (run-with-timer 1 nil #'org-roam-async--maybe-stop-spinner)))
+      (let ((cell (assq 'org-roam-async-spinner-mode minor-mode-alist)))
+        ;; Move leftmost for a better chance the user sees the animation
+        (when cell
+          (setq minor-mode-alist (assq-delete-all 'org-roam-async-spinner-mode minor-mode-alist))
+          (push cell minor-mode-alist))
+        (run-with-timer 1 nil #'org-roam-async--maybe-stop)
+        (timer-activate org-roam-async--mode-line-refresher))
+    (cancel-timer org-roam-async--mode-line-refresher)))
 
-(defun org-roam-async--maybe-stop-spinner ()
+(defun org-roam-async--maybe-stop ()
   (let ((elapsed (float-time (time-since org-roam-async--time-at-start))))
     (if (< elapsed 500)
         (if (el-job-ng-busy-p 'org-roam-async)
-            (run-with-timer 1 nil #'org-roam-async--maybe-stop-spinner)
+            (run-with-timer 1 nil #'org-roam-async--maybe-stop)
           (org-roam-async-spinner-mode 0))
+      (org-roam-async-spinner-mode 0)
       (el-job-ng-kill-keep-bufs 'org-roam-async)
       (message "(org-roam) Killed DB-sync because it took %.2fs" elapsed))))
 
