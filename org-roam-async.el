@@ -19,7 +19,7 @@
 ;; URL:      https://github.com/meedstrom/org-roam-async
 ;; Created:  2025-10-06
 ;; Keywords: org-mode, roam, convenience
-;; Package-Requires: ((emacs "29.1") (org-roam "2.3.1") (el-job "3.0.0") (spinner "1.7.4"))
+;; Package-Requires: ((emacs "29.1") (org-roam "2.3.1") (el-job "2.5.0"))
 
 ;;; Commentary:
 
@@ -32,31 +32,27 @@
 (require 'org-element)
 (require 'org-roam-db)
 (require 'el-job-ng)
-(require 'spinner)
+
+(defcustom org-roam-async-file-name-handler-alist nil
+  "Override for `file-name-handler-alist'."
+  :type 'alist
+  :group 'org-roam)
 
 
 ;;;; STAGE 1: Pick files to update
 
-;; NOTE: `org-roam-db-node-include-function' cannot be injected.
-(defun org-roam-async--relevant-user-settings ()
-  (list (cons 'org-roam-db-extra-links-elements org-roam-db-extra-links-elements)
-        (cons 'org-roam-db-extra-links-exclude-keys org-roam-db-extra-links-exclude-keys)
-        (cons 'org-roam-directory org-roam-directory)
-        (cons 'gc-cons-threshold org-roam-db-gc-threshold)
-        ;; Perf
-        (cons 'file-name-handler-alist nil)))
-
 (defvar org-roam-async--time-at-start nil)
 (defun org-roam-async-db-sync (&optional force)
   (interactive "P")
+  (el-job-ng-kill 'org-roam-async)
   (setq org-roam-async--time-at-start (current-time))
-  (org-roam-db--close)
-  (when force (delete-file org-roam-db-location))
   (message "(org-roam) Beginning DB sync...")
   (redisplay)
+  (org-roam-db--close)
+  (when force (delete-file org-roam-db-location))
   (org-roam-db)
-  (let* ((gc-cons-threshold org-roam-db-gc-threshold)
-         (file-name-handler-alist nil)
+  (let* ((file-name-handler-alist org-roam-async-file-name-handler-alist)
+         (gc-cons-threshold org-roam-db-gc-threshold)
          (disk-files (org-roam-async-list-files))
          (db-mtimes (cl-loop
                      with tbl = (make-hash-table :test #'equal)
@@ -89,25 +85,33 @@
       (message "(org-roam) Synced the DB in total %.2fs"
                (float-time (time-since org-roam-async--time-at-start))))))
 
-(defvar org-roam-async--spinner (spinner-create 'flipping-line))
 (define-minor-mode org-roam-async-spinner-mode
   "Mode for showing animation in modeline while subprocesses at work.
-Turns itself off when they are done."
-  :lighter (" " (:eval (spinner-print org-roam-async--spinner))
-            "...org-roam-async..."
-            (:eval (spinner-print org-roam-async--spinner)))
+Also watches if they take too long, and kills them.
+Turns itself off."
+  :lighter (:eval (format " (%.2fs)org-roam-async..."
+                          (float-time (time-since org-roam-async--time-at-start))))
   :global t
   :group 'org-roam
   (if org-roam-async-spinner-mode
-      (progn
-        (spinner-start org-roam-async--spinner)
-        (run-with-timer 1 nil #'org-roam-async--maybe-stop-spinner))
-    (spinner-stop org-roam-async--spinner)))
+      (run-with-timer 1 nil #'org-roam-async--maybe-stop-spinner)))
 
 (defun org-roam-async--maybe-stop-spinner ()
-  (if (el-job-ng-busy-p 'org-roam-async)
-      (run-with-timer 1 nil #'org-roam-async--maybe-stop-spinner)
-    (org-roam-async-spinner-mode 0)))
+  (let ((elapsed (float-time (time-since org-roam-async--time-at-start))))
+    (if (< elapsed 500)
+        (if (el-job-ng-busy-p 'org-roam-async)
+            (run-with-timer 1 nil #'org-roam-async--maybe-stop-spinner)
+          (org-roam-async-spinner-mode 0))
+      (el-job-ng-kill-keep-bufs 'org-roam-async)
+      (message "(org-roam) Killed DB-sync because it took %.2fs" elapsed))))
+
+;; NOTE: Cannot yet inject `org-roam-db-node-include-function' thru el-job-ng.
+(defun org-roam-async--relevant-user-settings ()
+  (list (cons 'org-roam-db-extra-links-elements        org-roam-db-extra-links-elements)
+        (cons 'org-roam-db-extra-links-exclude-keys    org-roam-db-extra-links-exclude-keys)
+        (cons 'org-roam-directory                      org-roam-directory)
+        (cons 'org-roam-db-gc-threshold                org-roam-db-gc-threshold)
+        (cons 'org-roam-async-file-name-handler-alist  org-roam-async-file-name-handler-alist)))
 
 
 ;;;; STAGE 2: Work in child processes.
@@ -124,9 +128,10 @@ Turns itself off when they are done."
 Ignore first arg HANDLER because this expects to run in a subprocess."
   (apply #'org-roam-async--store-query arglist))
 
-(defvar org-roam-async--hashes-tbl (make-hash-table :test 'equal))
-(defvar org-roam-async--attrs-tbl (make-hash-table :test 'equal))
+(defvar org-roam-async--hashes-tbl (make-hash-table :test #'equal))
+(defvar org-roam-async--attrs-tbl (make-hash-table :test #'equal))
 (defun org-roam-async--init-work-buffer (files)
+  "Read FILES into buffers and return an Org work buffer."
   ;; Pre-read all files, in case file-names change during parsing.
   (save-current-buffer
     (dolist (file files)
@@ -147,21 +152,24 @@ Ignore first arg HANDLER because this expects to run in a subprocess."
     (setq-local org-element-cache-persistent nil)
     (current-buffer)))
 
+;; Called for every file (by `el-job-ng--child-work')
 (defvar org-roam-async--work-buf nil)
 (defun org-roam-async--parse-file (file rest)
   "Parse FILE and return a list of EmacSQL queries reflecting it.
 REST is the remaining files for this subprocess."
-  (unless (eq org-roam-async--work-buf (current-buffer))
-    (switch-to-buffer
-     (setq org-roam-async--work-buf
-           (org-roam-async--init-work-buffer (cons file rest)))))
-  (erase-buffer)
-  (org-element-cache-reset) ;; TODO: Profile with cache disabled.
-  (insert-buffer-substring (get-buffer file))
-  ;; HACK: Simulate a file-visiting buffer.
-  (let ((buffer-file-name file)
-        (default-directory (file-name-directory file)))
-    (org-roam-async--mk-sql-queries)))
+  (let ((file-name-handler-alist org-roam-async-file-name-handler-alist)
+        (gc-cons-threshold org-roam-db-gc-threshold))
+    (unless (eq org-roam-async--work-buf (current-buffer))
+      (switch-to-buffer
+       (setq org-roam-async--work-buf
+             (org-roam-async--init-work-buffer (cons file rest)))))
+    (erase-buffer)
+    (org-element-cache-reset) ;; TODO: Profile with cache disabled.
+    (insert-buffer-substring (get-buffer file))
+    ;; HACK: Simulate a file-visiting buffer.
+    (let ((buffer-file-name file)
+          (default-directory (file-name-directory file)))
+      (org-roam-async--mk-sql-queries))))
 
 (defun org-roam-async--mk-sql-queries ()
   "The meat of what was `org-roam-db-update-file'."
