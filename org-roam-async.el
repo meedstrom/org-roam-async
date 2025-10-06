@@ -31,6 +31,8 @@
 (require 'org)
 (require 'org-element)
 (require 'org-roam-db)
+(unless (fboundp 'el-job-ng-run)
+  (error "Update to el-job 2.5.1+ to use org-roam-async"))
 (require 'el-job-ng)
 
 (defcustom org-roam-async-file-name-handler-alist nil
