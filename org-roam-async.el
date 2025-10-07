@@ -41,6 +41,13 @@
   :type 'alist
   :group 'org-roam)
 
+(defun patch/emacsql-close (connection &rest args)
+  "Prevent calling emacsql-close if connection handle is nil."
+  (when (oref connection handle)
+    t))
+
+(advice-add 'emacsql-close :before-while #'patch/emacsql-close)
+
 
 ;;;; STAGE 1: Pick files to update
 
@@ -56,7 +63,7 @@
   (org-roam-db)
   (let* ((file-name-handler-alist org-roam-async-file-name-handler-alist)
          (gc-cons-threshold org-roam-db-gc-threshold)
-         (disk-files (org-roam-async--list-files))
+         (disk-files (org-roam-async--list-files (expand-file-name org-roam-directory)))
          (db-mtimes (cl-loop
                      with tbl = (make-hash-table :test #'equal)
                      for (file mtime) in (org-roam-db-query
