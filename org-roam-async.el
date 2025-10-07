@@ -56,7 +56,7 @@
   (org-roam-db)
   (let* ((file-name-handler-alist org-roam-async-file-name-handler-alist)
          (gc-cons-threshold org-roam-db-gc-threshold)
-         (disk-files (org-roam-async-list-files))
+         (disk-files (org-roam-async--list-files))
          (db-mtimes (cl-loop
                      with tbl = (make-hash-table :test #'equal)
                      for (file mtime) in (org-roam-db-query
@@ -279,10 +279,6 @@ certain order of events on your save hook."
                      :callback #'org-roam-async--insert-into-db))))
 
 ;;;; Faster `org-roam-list-files'  (that thing takes 5 full seconds on a SSD)
-
-(defun org-roam-async-list-files ()
-  "Replacement for `org-roam-list-files'."
-  (org-roam-async--list-files (expand-file-name org-roam-directory)))
 
 (defvar org-roam-async--suffixes nil)
 (defvar org-roam-async--suffixes-re nil)
