@@ -1,0 +1,11 @@
+# org-roam-async
+
+If your `org-roam-db-sync` is slow, try this.
+
+1. Put the file somewhere in your `load-path` (it MUST be in `load-path`)
+2. Install [el-job](https://github.com/meedstrom/el-job/)
+3. Type `M-x org-roam-async-db-sync`
+
+## A .gif
+
+![Screencast](screencast.gif)
