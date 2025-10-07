@@ -310,7 +310,7 @@ certain order of events on your save hook."
   (and (setq file (or file (buffer-file-name (buffer-base-buffer))))
        (cl-loop for suffix in org-roam-async--suffixes
                 thereis (string-suffix-p suffix file))
-       (cl-loop for exclude-re in org-roam-file-exclude-regexp
+       (cl-loop for exclude-re in (ensure-list org-roam-file-exclude-regexp)
                 never (string-match-p exclude-re file))
        (file-in-directory-p file org-roam-directory))) ;; FIXME: Perf hotspot
 
