@@ -90,7 +90,8 @@
                      :inputs modified-files
                      :funcall-per-input #'org-roam-async--parse-file
                      :callback #'org-roam-async--insert-into-db)
-      (org-roam-async--spinner-mode))
+      (org-roam-async--spinner-mode)
+      (setq org-roam-async--called-from-db-sync t))
     (unless modified-files
       (message "(org-roam) Synced the DB in total %.2fs"
                (float-time (time-since org-roam-async--time-at-start))))))
@@ -238,6 +239,7 @@ REST is the remaining files for this subprocess."
 
 ;;; STAGE 3: All children returned, process their combined results.
 
+(defvar org-roam-async--called-from-db-sync nil)
 (defvar org-roam-async--last-queries nil)
 (defun org-roam-async--insert-into-db (outputs)
   (setq org-roam-async--last-queries outputs) ;; inspect this for fun
@@ -247,12 +249,15 @@ REST is the remaining files for this subprocess."
         (gc-cons-threshold org-roam-db-gc-threshold))
     (emacsql-with-transaction (org-roam-db)
       (dolist (arg-sets outputs)
-        (message "(org-roam) Running %d SQL queries... (for %d/%d files)"
-                 n-queries (cl-incf ctr) n-files)
+        (when org-roam-async--called-from-db-sync
+          (message "(org-roam) Running %d SQL queries... (for %d/%d files)"
+                   n-queries (cl-incf ctr) n-files))
         (dolist (args arg-sets)
           (apply #'org-roam-db-query args))))
-    (message "(org-roam) Synced the DB in total %.2fs"
-             (float-time (time-since org-roam-async--time-at-start)))))
+    (when org-roam-async--called-from-db-sync
+      (message "(org-roam) Synced the DB in total %.2fs"
+               (float-time (time-since org-roam-async--time-at-start))))
+    (setq org-roam-async--called-from-db-sync nil)))
 
 
 ;;; OPTIONAL STUFF
@@ -264,9 +269,13 @@ REST is the remaining files for this subprocess."
   (sqlite-mode-open-file org-roam-db-location))
 
 ;; NOTE: Here's a possible reimplementation of `org-roam-db-update-file' for
-;;       purpose of after-save-hook, although you could go with the original.
+;;       purpose of after-save-hook.
 ;;       But I think it'd be cleaner to throw it away altogether and reuse
-;;       `org-roam-async-db-sync' everywhere.
+;;       `org-roam-async-db-sync', even on save.
+
+(defun org-roam-async--try-update-on-save-h ()
+  "An alternative to `org-roam-db-autosync--try-update-on-save-h'."
+  (when org-roam-db-update-on-save (org-roam-async-db-update-file)))
 
 (defun org-roam-async-db-update-file (&optional file-path _)
   "An alternative to `org-roam-db-update-file'.
