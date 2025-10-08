@@ -273,7 +273,7 @@ REST is the remaining files for this subprocess."
     (when (and file org-roam-db-update-on-save)
       (org-roam-async--try-update (list file)))))
 
-(defun org-roam-async--try-update (files)
+(defun org-roam-async--try-update (&optional files)
   (setq files (delete-dups (append org-roam-async--queue (ensure-list files))))
   (setq org-roam-async--queue nil)
   (when files
