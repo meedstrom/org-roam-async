@@ -36,21 +36,18 @@
   (error "Update to el-job 2.5.1+ to use org-roam-async"))
 (require 'el-job-ng)
 
-(defcustom org-roam-async-file-name-handler-alist nil
-  "Override for `file-name-handler-alist'."
-  :type 'alist
+(defgroup org-roam-async nil
+  "Make org-roam async."
   :group 'org-roam)
 
-(defun patch/emacsql-close (connection &rest args)
-  "Prevent calling emacsql-close if connection handle is nil."
-  (when (oref connection handle)
-    t))
-
-(advice-add 'emacsql-close :before-while #'patch/emacsql-close)
+(defcustom org-roam-async-file-name-handler-alist nil
+  "Override for `file-name-handler-alist'."
+  :type 'alist)
 
 
 ;;;; STAGE 1: Pick files to update
 
+(defvar org-roam-async--called-from-db-sync nil)
 (defvar org-roam-async--time-at-start nil)
 (defun org-roam-async-db-sync (&optional force)
   (interactive "P")
@@ -138,7 +135,7 @@ Turns itself off."
         (cons 'org-roam-async-file-name-handler-alist  org-roam-async-file-name-handler-alist)))
 
 
-;;;; STAGE 2: Work in child processes.
+;;;; STAGE 2: Work in child processes
 
 (defvar org-roam-async--stored-queries nil
   "List of \((SQL ARGS...) (SQL ARGS...) ...).")
@@ -237,9 +234,8 @@ REST is the remaining files for this subprocess."
      (list (vector file file-title hash atime mtime)))))
 
 
-;;; STAGE 3: All children returned, process their combined results.
+;;; STAGE 3: All children returned, process their combined results
 
-(defvar org-roam-async--called-from-db-sync nil)
 (defvar org-roam-async--last-queries nil)
 (defun org-roam-async--insert-into-db (outputs)
   (setq org-roam-async--last-queries outputs) ;; inspect this for fun
@@ -260,6 +256,38 @@ REST is the remaining files for this subprocess."
     (setq org-roam-async--called-from-db-sync nil)))
 
 
+;;; AFTER-SAVE-HOOK
+
+(defvar org-roam-async--queue-timer (timer-create))
+(defvar org-roam-async--queue nil)
+(defun org-roam-async--enqueue (files)
+  (dolist (file (ensure-list files))
+    (push file org-roam-async--queue))
+  (cancel-timer org-roam-async--queue-timer)
+  (setq org-roam-async--queue-timer
+        (run-with-timer 1 nil #'org-roam-async--try-update)))
+
+(defun org-roam-async--try-update-on-save-h ()
+  "An alternative to `org-roam-db-autosync--try-update-on-save-h'."
+  (let ((file (buffer-file-name (buffer-base-buffer))))
+    (when (and file org-roam-db-update-on-save)
+      (org-roam-async--try-update (list file)))))
+
+(defun org-roam-async--try-update (files)
+  (setq files (delete-dups (append org-roam-async--queue (ensure-list files))))
+  (setq org-roam-async--queue nil)
+  (when files
+    (if (el-job-ng-busy-p 'org-roam-async)
+        (org-roam-async--enqueue files)
+      ;; (message "Updating files: %S" files)
+      (el-job-ng-run :id 'org-roam-async
+                     :require '( org-roam-async )
+                     :inject-vars (org-roam-async--relevant-user-settings)
+                     :inputs files
+                     :funcall-per-input #'org-roam-async--parse-file
+                     :callback #'org-roam-async--insert-into-db))))
+
+
 ;;; OPTIONAL STUFF
 
 (defun org-roam-async-open-db ()
@@ -268,32 +296,20 @@ REST is the remaining files for this subprocess."
   (require 'sqlite-mode)
   (sqlite-mode-open-file org-roam-db-location))
 
-;; NOTE: Here's a possible reimplementation of `org-roam-db-update-file' for
-;;       purpose of after-save-hook.
-;;       But I think it'd be cleaner to throw it away altogether and reuse
-;;       `org-roam-async-db-sync', even on save.
+;;;; Fix "finalizer failed: wrong type argument sqlitep nil"
+;; It seems to affect nothing, it's just noise.
 
-(defun org-roam-async--try-update-on-save-h ()
-  "An alternative to `org-roam-db-autosync--try-update-on-save-h'."
-  (when org-roam-db-update-on-save (org-roam-async-db-update-file)))
+(defun org-roam-async@emacsql-close (connection &rest _args)
+  "Prevent calling emacsql-close if connection handle is nil."
+  (when (oref connection handle)
+    t))
 
-(defun org-roam-async-db-update-file (&optional file-path _)
-  "An alternative to `org-roam-db-update-file'.
-Since it is asynchronous, it may be unsuitable if you depend on a
-certain order of events on your save hook."
-  (setq file-path (or file-path (buffer-file-name (buffer-base-buffer))))
-  (let ((content-hash (org-roam-db--file-hash file-path))
-        (db-hash (caar (org-roam-db-query [ :select hash :from files
-                                            :where (= file $s1)]
-                                          file-path))))
-    (unless (string= content-hash db-hash)
-      (el-job-ng-run :require '( org-roam-async )
-                     :inject-vars (org-roam-async--relevant-user-settings)
-                     :inputs (list file-path)
-                     :funcall-per-input #'org-roam-async--parse-file
-                     :callback #'org-roam-async--insert-into-db))))
+(advice-add 'emacsql-close :before-while #'org-roam-async@emacsql-close)
 
-;;;; Faster `org-roam-list-files'  (that thing takes 5 full seconds on a SSD)
+;;;; Faster `org-roam-list-files'
+;; Because that thing takes 5 full seconds on a SSD...
+;; Remove this section if PR gets accepted:
+;;     https://github.com/org-roam/org-roam/pull/2546
 
 (defvar org-roam-async--suffixes nil)
 (defvar org-roam-async--suffixes-re nil)
@@ -314,7 +330,6 @@ certain order of events on your save hook."
                         org-roam-async--suffixes-re
                         nil
                         nil
-                        ;; REVIEW: Why?
                         t)
            when (and (file-readable-p file)
                      (org-roam-async--roam-file-p file))
