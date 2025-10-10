@@ -19,8 +19,13 @@ If your `org-roam-db-sync` is slow, try this.
             #'org-roam-async-db-sync)
 ```
 
+
 ## Check for yourself that the DB looks right
 
 Use this command and look around:
 
     M-x org-roam-async-open-db
+
+## A known bug
+
+This package does not yet respect `org-roam-db-node-include-function`. Be aware!
