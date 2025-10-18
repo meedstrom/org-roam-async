@@ -29,3 +29,7 @@ Use this command and look around:
 ## A known bug
 
 This package does not yet respect `org-roam-db-node-include-function`. Be aware!
+
+## To do
+
+Saving a big file can still lag noticeably because the SQL insertions are still done in the main process.  Would be good to do them async as well.
